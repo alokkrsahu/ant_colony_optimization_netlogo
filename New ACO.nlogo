@@ -1,13 +1,18 @@
+extensions [table]
 breed [ants ant]
 breed [cities city]
+cities-own[cluster-no]
 links-own [pheromone]
-ants-own [ city-list visited city-here next-city tour-length ]
-globals [waypoints best-tour best-visited cnt best-monitor tmr itr avg monitor tt-tmr]
+ants-own [ city-list visited city-here next-city tour-length cluster-visited cluster-visiting ]
+globals [waypoints best-tour best-visited cnt monitor tmr itr avg pre-centroid centroid new-centroid clusters city-cluster best-monitor basecolors]
 
 to setup
   ca
   reset-ticks
   reset-timer
+  set centroid []
+  set new-centroid []
+  set pre-centroid []
   set waypoints (list (patch 43 33) (patch 12 29) (patch 30 63) (patch 56 26) (patch 16 20)
 (patch 56 35) (patch 11 44) (patch 15 61) (patch 19 33) (patch 42 62)
 (patch 41 19) (patch 10 12) (patch 20 24) (patch 59 43) (patch 55 34)
@@ -17,29 +22,43 @@ to setup
 (patch 38 59) (patch 22 27) (patch 26 23) (patch 14 42) (patch 2 6)
 (patch 31 63) (patch 20 7) (patch 35 25) (patch 52 6) (patch 55 6)
 )
+  set basecolors []
+  let col 5
+  while [col < 135]
+    [
+      set basecolors lput col basecolors
+      set col col + 1
+  ]
   create-cities length waypoints [set shape "circle"]
   let l length waypoints
   set l l - 1
   while [ l > -1]
   [
-;    PRINT item l waypoints
     ask city l [ set xcor [pxcor] of item l waypoints set ycor [pycor] of item l waypoints ]
     set l l - 1
   ]
-  set tt-tmr 0
+  set clusters []
+  let cn 1
+  while [cn <= no-of-clusters]
+  [
+    set clusters lput cn clusters
+    set cn cn + 1
+  ]
+
   set cnt 0
   create-ants ants-number [
     set xcor [xcor] of city 0
     set ycor [ycor] of city 0
+    set cluster-visiting one-of clusters
   ]
   ask links [set pheromone 0]
-  ask cities [create-links-with other cities set label who]
-  set monitor []
+  ask cities [create-links-with other cities]
   set best-visited  []
+  set monitor []
   set best-monitor []
   set tmr []
   set itr 1
-  ask ants [ set tour-length 0 set city-here 0 set next-city 1 set visited []  set visited lput city-here visited ]
+  ask ants [set tour-length 0 set city-here 0 set next-city -1 set visited []  set visited lput city-here visited ]
   let k 0
   let cl []
   set k length waypoints - 1
@@ -48,23 +67,24 @@ to setup
     set cl lput k cl
     set k k - 1
   ]
-  ask ants [set city-list cl]
+  ask ants [ set city-list cl  set cluster-visited []] ;
   cal-avg
+  set city-cluster table:make
 
 end
 
 to go
-  if length tmr > 37000 [set tt-tmr timer stop]
-  ask links [set pheromone  (1 - evoparation-rate) * pheromone ]
+  if length tmr > 4000 [stop]
+  allot-clusters
+  ask links [set pheromone (1 - evoparation-rate) * pheromone ]
+  reset-timer
   ask ants[
-
     ask ant who [
-
       ifelse length visited = length waypoints
       [return-home]
       [
         ifelse next-city = -1
-        [calculate-probablity]
+        [calculate-probablity set color [color] of city next-city]
         [follow-city]
       ]
       if next-city != -1 [fd 1 set tour-length tour-length + 1]
@@ -72,8 +92,81 @@ to go
   ]
   tick
   cal-avg
+end
+
+to calculate-probablity
+;  foreach clusters[ x ->
+;    let clust-list []
+;    ask cities with [cluster-no = x] [set clust-list lput who clust-list]
+;    table:put city-cluster x clust-list
+;  ]
+;  let nv []
+;  foreach city-list [ x -> if not member? x visited [set nv lput x nv]]
+;  set nv remove city-here nv
+;  set nv remove 0 nv
+  let nv select-next-city
+  if length nv = 0 [return-home stop]
+  set next-city one-of nv
+  let ch int city-here
+  let nc int next-city
+  let p [pheromone] of link city-here next-city
+  let d [distance city ch] of city nc + tour-length
+  let tpv total-pheromone-calculator city-here
+  ifelse tpv = 0 [set next-city one-of nv]
+  [
+    foreach nv [ x ->
+      if x != 0
+      [
+        let m [pheromone] of link city-here x
+        let n [distance city ch] of city x + tour-length
+        if  (m ^ alpha * n ^ beta) / tpv > (p ^ alpha * d ^ beta) / tpv
+        [set next-city x]
+      ]
+    ]
+  ]
+end
+
+to-report select-next-city
+  foreach clusters[ x ->
+    let clust-list []
+    ask cities with [cluster-no = x] [set clust-list lput who clust-list]
+    table:put city-cluster x clust-list
+  ]
+  let counter 0
+  let cv table:get city-cluster cluster-visiting
+  foreach cv [ x ->
+    if member? x visited [set counter counter + 1]
+  ]
+  let cnv []
+  if length cv = counter [
+    set cluster-visited lput cluster-visiting cluster-visited
+    foreach clusters [ x ->
+      if not member? x cluster-visited [set cnv lput x cnv]]
+    set cluster-visiting one-of cnv
+  ]
+
+  set city-list table:get city-cluster cluster-visiting
+  let nv []
+  foreach city-list [ x -> if not member? x visited [set nv lput x nv]]
+  set nv remove city-here nv
+  set nv remove 0 nv
+  report nv
+end
+
+
+to allot-clusters
+  let c []
+  foreach centroid [x ->
+    ask x [ ask cities-here[ set c lput color c ]]]
+  let counter 1
+  foreach c [ x ->
+    ask cities with [color = x] [set cluster-no counter]
+    set counter counter + 1
+  ]
 
 end
+
+
 
 to return-home
   face city 0
@@ -82,12 +175,13 @@ to return-home
   [
     move-to city 0
     set city-here 0
+    set monitor lput tour-length monitor
+    carefully [if tour-length < last best-monitor [set best-monitor lput tour-length best-monitor]][]
     set tmr lput itr tmr
     set itr itr + 1
     update-pheromone
 ;    update-best-pheromone
   ]
-
 ;  update-best-pheromone
 end
 
@@ -98,12 +192,13 @@ to update-pheromone
   foreach l [ x ->
     ask link item 0 x item 1 x [set pheromone pheromone + ( 1 / tl)]]
   set city-here 0
-  if cnt = 0 [ set best-tour tour-length set best-visited visited set cnt 1 set best-monitor lput tour-length best-monitor print best-visited print best-tour ]
-  if tour-length < best-tour [set best-visited visited set best-tour tour-length set best-monitor lput tour-length best-monitor print best-visited print best-tour]
-  set monitor lput tour-length monitor
+  if cnt = 0 [set best-tour tour-length set best-visited visited set cnt 1 print best-visited print best-tour set best-monitor lput tour-length best-monitor]
+  if tour-length < best-tour [set best-visited visited set best-tour tour-length print best-visited print best-tour ]
   set visited []
   set visited lput 0 visited
   set tour-length 0
+  set cluster-visited []
+  set cluster-visiting one-of clusters
   set next-city -1
 end
 
@@ -113,48 +208,18 @@ to update-best-pheromone
   foreach l [ x ->
     ask link item 0 x item 1 x [set pheromone pheromone + ( 1 / tl)]]
   set city-here 0
-  if cnt = 0 [ set best-tour tour-length set best-visited visited set cnt 1 set best-monitor lput tour-length best-monitor print best-visited print best-tour ]
-  if tour-length < best-tour [set best-visited visited set best-tour tour-length set best-monitor lput tour-length best-monitor set monitor lput tour-length monitor print best-visited print best-tour]
-  set monitor lput tour-length monitor
+  if cnt = 0 [set best-tour tour-length set best-visited visited set cnt 1 print best-visited print best-tour]
+  if tour-length < best-tour [set best-visited visited set best-tour tour-length print best-visited print best-tour ]
   set visited []
   set visited lput 0 visited
   set tour-length 0
+  set cluster-visited []
+  set cluster-visiting one-of clusters
   set next-city -1
-
-
-end
-
-
-to calculate-probablity
-  let nv []
-  foreach city-list [ x -> if not member? x visited [set nv lput x nv]]
-  set nv remove city-here nv
-  set nv remove 0 nv
-  set next-city one-of nv
-  let ch int city-here
-  let nc int next-city
-  let p [pheromone] of link city-here next-city
-  let d [distance city nc] of city ch + tour-length
-  let tpv total-pheromone-calculator city-here
-  ifelse tpv = 0 [set next-city one-of nv]
-  [
-    foreach nv [ x ->
-      if x != 0
-      [
-        let m [pheromone] of link city-here x
-        let n [distance city ch] of city x
-        if  (m ^ alpha * n ^ beta) / tpv > (p ^ alpha * d ^ beta) / tpv
-        [set next-city x]
-      ]
-    ]
-  ]
-
-
 end
 
 to follow-city
   face city next-city if distance city next-city < 1 [ move-to city next-city set city-here next-city set visited lput city-here visited if length visited != length waypoints [ set next-city -1  ]]
-
 end
 
 to-report total-pheromone-calculator [here]
@@ -168,18 +233,17 @@ to-report total-pheromone-calculator [here]
     set k k - 1
   ]
   set cl remove here cl
-
   let tp 0
-
   foreach cl [ x ->
-        set tp tp + ([pheromone] of link here x) ^ alpha * (([distance city here] of city x) ) ^ beta
+        set tp tp + ([pheromone] of link here x) ^ alpha * (([distance city here] of city x) + tour-length ) ^ beta
       ]
-
   report tp
 end
 
 to show-best-path
-  foreach best-visited [ x ->
+  let l best-visited
+  set l lput 0 l
+  foreach l [ x ->
     let c [color] of city x
     ask city x [set color white]
     wait 0.5
@@ -192,15 +256,11 @@ end
 to cal-avg
   carefully[
   let av 0
-  foreach best-monitor [ x ->
+  foreach monitor [ x ->
     set av av + x]
   let t last tmr
-
-    set avg av / t][]
-
+  set avg av / t][]
 end
-
-
 
 to-report get-unique-link [lnk-list]
   let l []
@@ -217,12 +277,62 @@ to-report get-unique-link [lnk-list]
   set f remove-duplicates f
   report f
 end
+
+to K-Means
+  assign-clusters
+  find-centroids
+  set centroid new-centroid
+  if centroid = pre-centroid [stop]
+  set new-centroid []
+  set pre-centroid centroid
+end
+
+to initialize-centroids
+  let colors basecolors
+  loop
+  [
+    let x one-of waypoints
+    ifelse member? x centroid [][ ask x [set pcolor last colors + 1 set colors butlast colors] set centroid lput x centroid]
+    if length centroid = no-of-clusters [stop]
+  ]
+end
+
+to assign-clusters
+  foreach waypoints [x -> ask x [set pcolor [pcolor] of nearest-centroid x]]
+end
+
+to-report nearest-centroid [point]
+  let dis [distance item 0 centroid] of point
+  let minn dis
+  let result item 0 centroid
+  foreach centroid [x ->
+    ask x [set dis distance point]
+    if dis < minn [set result x set minn dis]
+  ]
+  report result
+end
+
+to find-centroids
+  set new-centroid []
+  foreach centroid [ x ->
+    let var []
+    foreach waypoints [ y -> ask y [ if [pcolor] of y = [pcolor] of x [set var lput y var]]]
+    let xc 0
+    let yc 0
+    foreach var[ z -> ask z [set xc xc + pxcor set yc yc + pycor]]
+    let dis [distance item 0 var] of (patch round (xc / length var) round(yc / length var))
+    let minn dis
+    let result item 0 var
+    foreach var[ w -> ask w [set dis distance (patch round (xc / length var) round(yc / length var))] if dis < minn [set result w set minn dis]]
+    set new-centroid lput result new-centroid
+  ]
+end
 @#$#@#$#@
 GRAPHICS-WINDOW
-528
-12
-1381
-866
+327
+10
+1180
+864
 -1
 -1
 13.0
@@ -246,10 +356,10 @@ ticks
 30.0
 
 BUTTON
-407
-53
-523
-86
+204
+69
+320
+102
 NIL
 setup
 NIL
@@ -263,12 +373,12 @@ NIL
 1
 
 BUTTON
-408
-90
-525
-123
-NIL
+205
+175
+319
+208
 go
+ask cities [ask patch-here [set pcolor black]]\ngo
 T
 1
 T
@@ -280,10 +390,10 @@ NIL
 1
 
 SLIDER
-1
-51
+25
+140
+197
 173
-84
 alpha
 alpha
 0
@@ -295,10 +405,10 @@ NIL
 HORIZONTAL
 
 SLIDER
-0
-88
-172
-121
+24
+177
+196
+210
 beta
 beta
 0
@@ -310,14 +420,14 @@ NIL
 HORIZONTAL
 
 SLIDER
-0
-16
-172
-49
+24
+68
+196
+101
 ants-number
 ants-number
-0
-40
+1
+500
 40.0
 1
 1
@@ -325,25 +435,25 @@ NIL
 HORIZONTAL
 
 SLIDER
-0
-124
-172
-157
+24
+213
+196
+246
 evoparation-rate
 evoparation-rate
-0.01
+0.00
 0.99
 0.5
-0.01
+0.10
 1
 NIL
 HORIZONTAL
 
 BUTTON
-408
-126
-523
-159
+205
+209
+320
+242
 show-best-path
 show-best-path
 NIL
@@ -357,73 +467,104 @@ NIL
 1
 
 MONITOR
-5
-165
-146
-210
+29
+254
+170
+299
 Best-Tour-Length
-min best-monitor
+min monitor
 17
 1
 11
 
 MONITOR
-6
-212
-147
-257
-Worst-Tour-Length
-max best-monitor
-17
-1
-11
-
-MONITOR
-6
-259
-148
-304
-Best-Path-Iteration-No
-position min best-monitor monitor
-0
-1
-11
-
-MONITOR
-6
-308
-148
-353
-Total Iteration
-length tmr
-0
-1
-11
-
-PLOT
-181
-16
-398
-178
-CONVERGENCE
-NIL
-NIL
-0.0
-10.0
-0.0
-10.0
-true
-false
-"" ""
-PENS
-"default" 1.0 0 -16777216 true "" "plotxy last tmr last best-monitor"
-
-PLOT
-181
-182
-399
+30
 352
-ALL TOUR LENGTH
+171
+397
+Worst-Tour-Length
+max monitor
+17
+1
+11
+
+MONITOR
+30
+402
+172
+447
+Best-Path-Iteration-No
+position min monitor monitor + 1
+0
+1
+11
+
+MONITOR
+30
+453
+172
+498
+Total Iteration
+length monitor
+0
+1
+11
+
+SLIDER
+25
+104
+197
+137
+no-of-clusters
+no-of-clusters
+1
+20
+20.0
+1
+1
+NIL
+HORIZONTAL
+
+BUTTON
+205
+140
+319
+173
+K-Means
+K-Means\nask cities [set color [pcolor] of patch-here]
+T
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+BUTTON
+204
+104
+318
+137
+Initialize-Centroids
+initialize-centroids
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+PLOT
+1186
+52
+1694
+611
+plot 1
 NIL
 NIL
 0.0
@@ -434,7 +575,7 @@ true
 false
 "" ""
 PENS
-"default" 1.0 0 -16777216 true "" "plotxy last tmr last monitor"
+"default" 1.0 0 -16777216 true "plotxy 0 0 " "plotxy last tmr last best-monitor"
 
 @#$#@#$#@
 ## WHAT IS IT?
